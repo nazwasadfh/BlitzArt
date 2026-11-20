@@ -8,7 +8,7 @@
 #   - blitz system toolbox
 #   - Boot to TTY (no GUI by default)
 #
-# Usage: ./build-iso [-i INITSYS] [-o OUT_DIR] [-w WORKSPACE] [-k] [-v]
+# Usage: ./build-iso [-i INITSYS] [-o OUT_DIR] [-k] [-v]
 #
 # Requirements: artools (pacman -S artools)   # provides buildiso
 
@@ -19,9 +19,9 @@ readonly VERSION="1.1.0"
 readonly PROFILE_NAME="blitzart"
 readonly DOTS_REPO="https://github.com/nazwasadfh/dots.git"
 
-# Defaults (match artools conventions)
+# Defaults (match artools conventions; workspace comes from artools.conf,
+# default ~/artools-workspace — no CLI flag for it)
 INITSYS="dinit"
-WORKSPACE_DIR="${HOME}/artools-workspace"
 OUT_DIR="./out"
 KEEP_WORK=0
 VERBOSE=0
@@ -47,23 +47,23 @@ Usage: $SCRIPT_NAME [options]
 
 Options:
   -i, --init INITSYS   Init system: openrc | runit | s6 | dinit (default: dinit)
-  -o, --out DIR        Output directory (default: ./out)
-  -w, --work DIR       artools workspace (default: ~/artools-workspace)
-  -k, --keep-work      Keep the workspace after build
+  -o, --out DIR        Output directory for the ISO (default: ./out)
+  -k, --keep-work      Keep the artools workspace/profile after build
   -v, --verbose        Verbose output
   -h, --help           Show this help
 
 Requirements: artools (pacman -S artools)   # provides buildiso
 
-The script creates the artools profile at:
-  <work>/iso-profiles/${PROFILE_NAME}/
-  { Packages-Root, live-overlay/, root-overlay/ }
+The script stages an artools profile under ~/artools-workspace/iso-profiles/blitzart/:
+  Packages-Root   - packages installed into the live rootfs
+  live-overlay/   - files delivered verbatim into the live ISO (configs, blitz, blitzinstall)
+  root-overlay/   - files delivered verbatim into the installed system
 
 and runs:
-  buildiso -p ${PROFILE_NAME} -i <INITSYS>
 
-The finished ISO lands in:
-  <work>/iso/   and is copied to <out>/
+  buildiso -p blitzart -i <INITSYS> -t <OUT_DIR>
+
+The finished ISO lands in <OUT_DIR>/blitzart/<profile>-*.iso
 EOF
 }
 
@@ -72,7 +72,6 @@ while (( $# )); do
     case $1 in
         -i|--init)       INITSYS="$2"; shift 2 ;;
         -o|--out)        OUT_DIR="$2"; shift 2 ;;
-        -w|--work)       WORKSPACE_DIR="$2"; shift 2 ;;
         -k|--keep-work)  KEEP_WORK=1; shift ;;
         -v|--verbose)    VERBOSE=1; shift ;;
         -h|--help)       usage; exit 0 ;;
@@ -85,19 +84,16 @@ msg "BlitzArt Linux ISO builder v$VERSION"
 
 [[ $EUID -eq 0 ]] || die "Run as root (buildiso needs root)."
 
-have buildiso || {
-    die "buildiso not found. Install artools first: pacman -S artools"
-}
+have buildiso || die "buildiso not found. Install artools first: pacman -S artools"
 info "Using buildiso: $(command -v buildiso)"
 
-# Validate init system
 case $INITSYS in
     openrc|runit|s6|dinit) ;;
     *) die "Unsupported init system: $INITSYS (openrc | runit | s6 | dinit)" ;;
 esac
 
 msg "Init system: $INITSYS"
-msg "Workspace:   $WORKSPACE_DIR"
+msg "Workspace:   ~/artools-workspace"
 msg "Profile:     $PROFILE_NAME"
 
 # Network check (required for dots clone)
@@ -115,13 +111,20 @@ if ! git clone --depth 1 "$DOTS_REPO" "$DOTS_DIR"; then
 fi
 
 # ---------- Set up artools profile ----------
-PROFILE_DIR="${WORKSPACE_DIR}/iso-profiles/${PROFILE_NAME}"
+PROFILE_DIR="${HOME}/artools-workspace/iso-profiles/${PROFILE_NAME}"
 LIVE_OVERLAY="${PROFILE_DIR}/live-overlay"
 ROOT_OVERLAY="${PROFILE_DIR}/root-overlay"
 
 msg "Staging profile into ${PROFILE_DIR}"
 rm -rf "${PROFILE_DIR}"
 mkdir -p "${LIVE_OVERLAY}" "${ROOT_OVERLAY}"
+
+# Copy profile.conf and profile.d/ (buildiso reads these for build settings)
+cp "$(dirname "$0")/iso/${PROFILE_NAME}/profile.conf" "${PROFILE_DIR}/profile.conf"
+if [[ -d "$(dirname "$0")/iso/${PROFILE_NAME}/profile.d" ]]; then
+    cp -a "$(dirname "$0")/iso/${PROFILE_NAME}/profile.d" "${PROFILE_DIR}/"
+    info "Copied profile.conf and profile.d/"
+fi
 
 # Packages-Root (rootfs packages; @initsys@ is substituted by buildiso)
 PACKAGES_SRC="$(dirname "$0")/iso/${PROFILE_NAME}/packages.d/blitzart.packages"
@@ -134,7 +137,7 @@ info "Wrote Packages-Root ($(wc -l < "$PACKAGES_SRC") lines)"
 # Overlay airootfs into live-overlay (files reach the live session verbatim)
 AIROOTFS="$(dirname "$0")/iso/${PROFILE_NAME}/airootfs"
 if [[ -d $AIROOTFS ]]; then
-    info "Copying airoootfs into live-overlay"
+    info "Copying airootfs into live-overlay"
     cp -a "$AIROOTFS"/. "${LIVE_OVERLAY}/"
 fi
 
@@ -157,44 +160,33 @@ if [[ -d $DOTS_DIR ]]; then
     fi
 fi
 
-# Keep workspace tidy
 rm -rf "$DOTS_DIR"
 
 # ---------- Build ISO ----------
-msg "Building ISO with buildiso -p ${PROFILE_NAME} -i ${INITSYS}"
+msg "Building ISO with buildiso -p ${PROFILE_NAME} -i ${INITSYS} -t ${OUT_DIR}"
 mkdir -p "$OUT_DIR"
 
-# Run buildiso from the workspace root so it finds iso-profiles/
-pushd "$WORKSPACE_DIR" >/dev/null
-if ! buildiso -p "$PROFILE_NAME" -i "$INITSYS"; then
-    popd >/dev/null || true
+build_args=(-p "$PROFILE_NAME" -i "$INITSYS" -t "$OUT_DIR")
+(( VERBOSE )) && build_args+=(-v)
+
+if ! buildiso "${build_args[@]}"; then
     die "buildiso failed."
 fi
-popd >/dev/null || true
 
-# Copy resulting ISO(s) to OUT_DIR
-ISO_POOL="${WORKSPACE_DIR}/iso"
-if [[ -d $ISO_POOL ]]; then
-    shopt -s nullglob
-    isos=("$ISO_POOL"/*.iso)
-    shopt -u nullglob
-    if (( ${#isos[@]} )); then
-        cp -f "${isos[@]}" "$OUT_DIR"/
-        msg "ISO built"
-        ls -lh "$OUT_DIR"/*.iso
-    else
-        warn "No .iso found in ${ISO_POOL}"
-    fi
+# Show result
+if compgen -G "${OUT_DIR}/${PROFILE_NAME}/*.iso" >/dev/null; then
+    msg "ISO built"
+    ls -lh "${OUT_DIR}/${PROFILE_NAME}"/*.iso
 else
-    warn "ISO pool not found at ${ISO_POOL}"
+    warn "No .iso found under ${OUT_DIR}/${PROFILE_NAME}"
 fi
 
 # ---------- Cleanup ----------
 if (( KEEP_WORK )); then
-    info "Workspace kept at ${WORKSPACE_DIR}"
+    info "Workspace/profile kept at ${PROFILE_DIR}"
 else
-    info "Cleaning workspace ${WORKSPACE_DIR}"
-    rm -rf "${WORKSPACE_DIR:?}"
+    info "Removing staged profile ${PROFILE_DIR}"
+    rm -rf "${PROFILE_DIR}"
 fi
 
 msg "Done."
