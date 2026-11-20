@@ -1,32 +1,30 @@
 #!/usr/bin/env bash
-# build-iso - Build BlitzArt Linux ISO
-# Requires: artools-iso (pacman -S artools-iso)
+# build-iso - Build BlitzArt Linux ISO using artools buildiso
 #
 # BlitzArt Linux is an Artix-based distribution with:
 #   - Dinit init
 #   - Btrfs root with full snapshots (snapper + grub-btrfs)
 #   - Repos: artix, arch, blackarch, chaotic-aur
 #   - blitz system toolbox
-#   - Boot to TTY
+#   - Boot to TTY (no GUI by default)
 #
-# Usage: ./build-iso [--profile blitzart] [--out /path/to/out] [--work /path/to/work]
+# Usage: ./build-iso [-i INITSYS] [-o OUT_DIR] [-w WORKSPACE] [-k] [-v]
+#
+# Requirements: artools (pacman -S artools)   # provides buildiso
 
 set -euo pipefail
 
 readonly SCRIPT_NAME="$(basename "$0")"
-readonly VERSION="1.0.0"
-readonly DISTRO_NAME="BlitzArt Linux"
-readonly DISTRO_ID="blitzart"
+readonly VERSION="1.1.0"
 readonly PROFILE_NAME="blitzart"
-readonly PROFILE_DIR_BASE="/usr/share/artoolsiso/profiles"
 readonly DOTS_REPO="https://github.com/nazwasadfh/dots.git"
 
-# Defaults
+# Defaults (match artools conventions)
+INITSYS="dinit"
+WORKSPACE_DIR="${HOME}/artools-workspace"
 OUT_DIR="./out"
-WORK_DIR="/tmp/blitzart-iso"
-PROFILE="blitzart"
-VERBOSE=0
 KEEP_WORK=0
+VERBOSE=0
 
 # Colors
 if [[ -t 1 ]]; then
@@ -43,34 +41,38 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 usage() {
     cat <<EOF
-$SCRIPT_NAME v$VERSION - Build BlitzArt Linux ISO
+$SCRIPT_NAME v$VERSION - Build BlitzArt Linux ISO with artools buildiso
 
 Usage: $SCRIPT_NAME [options]
 
 Options:
-  -p, --profile NAME    Profile name (default: $PROFILE_NAME)
-  -o, --out DIR         Output directory (default: $OUT_DIR)
-  -w, --work DIR        Work directory (default: $WORK_DIR)
-  -k, --keep-work       Keep the work directory after build
-  -v, --verbose         Verbose output
-  -h, --help            Show this help
+  -i, --init INITSYS   Init system: openrc | runit | s6 | dinit (default: dinit)
+  -o, --out DIR        Output directory (default: ./out)
+  -w, --work DIR       artools workspace (default: ~/artools-workspace)
+  -k, --keep-work      Keep the workspace after build
+  -v, --verbose        Verbose output
+  -h, --help           Show this help
 
-Requirements: artools-iso (pacman -S artools-iso)
+Requirements: artools (pacman -S artools)   # provides buildiso
 
-BlitzArt Linux:
-  - Artix-based live ISO with dinit init
-  - Btrfs root + optional @home subvolume
-  - blitz system toolbox included
-  - Boot to TTY (no GUI by default)
+The script creates the artools profile at:
+  <work>/iso-profiles/${PROFILE_NAME}/
+  { Packages-Root, live-overlay/, root-overlay/ }
+
+and runs:
+  buildiso -p ${PROFILE_NAME} -i <INITSYS>
+
+The finished ISO lands in:
+  <work>/iso/   and is copied to <out>/
 EOF
 }
 
-# Parse args
+# ---------- Parse args ----------
 while (( $# )); do
     case $1 in
-        -p|--profile)    PROFILE="$2"; shift 2 ;;
+        -i|--init)       INITSYS="$2"; shift 2 ;;
         -o|--out)        OUT_DIR="$2"; shift 2 ;;
-        -w|--work)       WORK_DIR="$2"; shift 2 ;;
+        -w|--work)       WORKSPACE_DIR="$2"; shift 2 ;;
         -k|--keep-work)  KEEP_WORK=1; shift ;;
         -v|--verbose)    VERBOSE=1; shift ;;
         -h|--help)       usage; exit 0 ;;
@@ -78,114 +80,121 @@ while (( $# )); do
     esac
 done
 
-# Sanity checks
+# ---------- Sanity checks ----------
 msg "BlitzArt Linux ISO builder v$VERSION"
 
-[[ $EUID -eq 0 ]] || die "Run as root (artools-iso needs root)."
+[[ $EUID -eq 0 ]] || die "Run as root (buildiso needs root)."
 
-have mkiso || {
-    if have artix-iso; then
-        # artools-iso on Artix provides artix-iso; mkiso is the archiso name
-        info "Using artix-iso as mkiso"
-        mkiso() { artix-iso "$@"; }
-    else
-        die "artools-iso is not installed. Run: pacman -S artools-iso"
-    fi
-} || die "mkiso not found"
+have buildiso || {
+    die "buildiso not found. Install artools first: pacman -S artools"
+}
+info "Using buildiso: $(command -v buildiso)"
 
-have pacstrap || die "pacstrap not found (part of pacman)."
+# Validate init system
+case $INITSYS in
+    openrc|runit|s6|dinit) ;;
+    *) die "Unsupported init system: $INITSYS (openrc | runit | s6 | dinit)" ;;
+esac
 
-# Network check
+msg "Init system: $INITSYS"
+msg "Workspace:   $WORKSPACE_DIR"
+msg "Profile:     $PROFILE_NAME"
+
+# Network check (required for dots clone)
 msg "Checking network connectivity"
 if ! ping -c1 -W3 archlinux.org >/dev/null 2>&1 && ! ping -c1 -W3 1.1.1.1 >/dev/null 2>&1; then
     die "No network. The ISO builder requires internet access."
 fi
 info "Network OK"
 
-# Locate the profile directory
-msg "Locating the $PROFILE profile"
-
-PROFILE_SRC_DIR=""
-for d in "$PROFILE_DIR_BASE/$PROFILE" "./iso/$PROFILE" "./profiles/$PROFILE" "$(dirname "$0")/iso/$PROFILE"; do
-    if [[ -d $d ]]; then PROFILE_SRC_DIR="$d"; break; fi
-done
-
-if [[ -z $PROFILE_SRC_DIR ]]; then
-    die "Profile '$PROFILE' not found in $PROFILE_DIR_BASE or ./iso/$PROFILE"
-fi
-info "Using profile from $PROFILE_SRC_DIR"
-
-# Ensure the dots repo is up to date
-msg "Preparing dots repository (configs)"
-DOTS_DIR="$WORK_DIR/dots"
-if [[ -d $DOTS_DIR/.git ]]; then
-    info "Updating existing clone at $DOTS_DIR"
-    git -C "$DOTS_DIR" pull --ff-only || warn "Could not update dots; using existing clone"
-else
-    rm -rf "$DOTS_DIR"
-    mkdir -p "$WORK_DIR"
-    info "Cloning $DOTS_REPO into $DOTS_DIR"
-    git clone --depth 1 "$DOTS_REPO" "$DOTS_DIR"
+# ---------- Prepare dots repository ----------
+DOTS_DIR="$(mktemp -d)"
+msg "Preparing dots repository ($DOTS_REPO)"
+if ! git clone --depth 1 "$DOTS_REPO" "$DOTS_DIR"; then
+    warn "Could not clone dots repo; continuing without overlay configs"
 fi
 
-# Stage profile into work dir (copy so we don't mutate the source)
-STAGE_PROFILE="$WORK_DIR/profile"
-msg "Staging profile into $STAGE_PROFILE"
-rm -rf "$STAGE_PROFILE"
-mkdir -p "$STAGE_PROFILE"
-cp -a "$PROFILE_SRC_DIR"/. "$STAGE_PROFILE"/
+# ---------- Set up artools profile ----------
+PROFILE_DIR="${WORKSPACE_DIR}/iso-profiles/${PROFILE_NAME}"
+LIVE_OVERLAY="${PROFILE_DIR}/live-overlay"
+ROOT_OVERLAY="${PROFILE_DIR}/root-overlay"
 
-# Overlay dots configs into the profile's airootfs
-AIROOTFS="$STAGE_PROFILE/airootfs"
-mkdir -p "$AIROOTFS"
+msg "Staging profile into ${PROFILE_DIR}"
+rm -rf "${PROFILE_DIR}"
+mkdir -p "${LIVE_OVERLAY}" "${ROOT_OVERLAY}"
 
-info "Copying fastfetch config"
-if [[ -d $DOTS_DIR/fastfetch ]]; then
-    mkdir -p "$AIROOTFS/etc/skel/.config/fastfetch"
-    cp -a "$DOTS_DIR/fastfetch"/. "$AIROOTFS/etc/skel/.config/fastfetch"/
-    info "  -> /etc/skel/.config/fastfetch"
-else
-    warn "fastfetch config not found in $DOTS_DIR/fastfetch"
+# Packages-Root (rootfs packages; @initsys@ is substituted by buildiso)
+PACKAGES_SRC="$(dirname "$0")/iso/${PROFILE_NAME}/packages.d/blitzart.packages"
+if [[ ! -f $PACKAGES_SRC ]]; then
+    die "Package list not found: $PACKAGES_SRC"
+fi
+cp "$PACKAGES_SRC" "${PROFILE_DIR}/Packages-Root"
+info "Wrote Packages-Root ($(wc -l < "$PACKAGES_SRC") lines)"
+
+# Overlay airootfs into live-overlay (files reach the live session verbatim)
+AIROOTFS="$(dirname "$0")/iso/${PROFILE_NAME}/airootfs"
+if [[ -d $AIROOTFS ]]; then
+    info "Copying airoootfs into live-overlay"
+    cp -a "$AIROOTFS"/. "${LIVE_OVERLAY}/"
 fi
 
-info "Copying .zshrc"
-if [[ -f $DOTS_DIR/.zshrc ]]; then
-    mkdir -p "$AIROOTFS/etc/skel"
-    cp -f "$DOTS_DIR/.zshrc" "$AIROOTFS/etc/skel/.zshrc"
-    info "  -> /etc/skel/.zshrc"
-else
-    warn ".zshrc not found in $DOTS_DIR"
+# Overlay dots configs into live session /etc/skel
+if [[ -d $DOTS_DIR ]]; then
+    info "Overlaying dots configs into live session /etc/skel"
+    if [[ -d $DOTS_DIR/fastfetch ]]; then
+        mkdir -p "${LIVE_OVERLAY}/etc/skel/.config/fastfetch"
+        cp -a "$DOTS_DIR/fastfetch"/. "${LIVE_OVERLAY}/etc/skel/.config/fastfetch"/
+        info "  -> /etc/skel/.config/fastfetch"
+    fi
+    if [[ -f $DOTS_DIR/.zshrc ]]; then
+        cp -f "$DOTS_DIR/.zshrc" "${LIVE_OVERLAY}/etc/skel/.zshrc"
+        info "  -> /etc/skel/.zshrc"
+    fi
+    if [[ -d $DOTS_DIR/kitty ]]; then
+        mkdir -p "${LIVE_OVERLAY}/etc/skel/.config/kitty"
+        cp -a "$DOTS_DIR/kitty"/. "${LIVE_OVERLAY}/etc/skel/.config/kitty"/
+        info "  -> /etc/skel/.config/kitty"
+    fi
 fi
 
-info "Copying kitty config"
-if [[ -d $DOTS_DIR/kitty ]]; then
-    mkdir -p "$AIROOTFS/etc/skel/.config/kitty"
-    cp -a "$DOTS_DIR/kitty"/. "$AIROOTFS/etc/skel/.config/kitty"/
-    info "  -> /etc/skel/.config/kitty"
-else
-    warn "kitty config not found in $DOTS_DIR/kitty"
-fi
+# Keep workspace tidy
+rm -rf "$DOTS_DIR"
 
-# Build the ISO
-msg "Building ISO with artools-iso"
+# ---------- Build ISO ----------
+msg "Building ISO with buildiso -p ${PROFILE_NAME} -i ${INITSYS}"
 mkdir -p "$OUT_DIR"
 
-if have artix-iso; then
-    artix-iso -p "$PROFILE" -o "$OUT_DIR" -w "$WORK_DIR/build" "$STAGE_PROFILE"
+# Run buildiso from the workspace root so it finds iso-profiles/
+pushd "$WORKSPACE_DIR" >/dev/null
+if ! buildiso -p "$PROFILE_NAME" -i "$INITSYS"; then
+    popd >/dev/null || true
+    die "buildiso failed."
+fi
+popd >/dev/null || true
+
+# Copy resulting ISO(s) to OUT_DIR
+ISO_POOL="${WORKSPACE_DIR}/iso"
+if [[ -d $ISO_POOL ]]; then
+    shopt -s nullglob
+    isos=("$ISO_POOL"/*.iso)
+    shopt -u nullglob
+    if (( ${#isos[@]} )); then
+        cp -f "${isos[@]}" "$OUT_DIR"/
+        msg "ISO built"
+        ls -lh "$OUT_DIR"/*.iso
+    else
+        warn "No .iso found in ${ISO_POOL}"
+    fi
 else
-    mkiso -p "$PROFILE" -o "$OUT_DIR" -w "$WORK_DIR/build" "$STAGE_PROFILE"
+    warn "ISO pool not found at ${ISO_POOL}"
 fi
 
-msg "ISO build complete"
-info "Output directory: $OUT_DIR"
-ls -lh "$OUT_DIR"/*.iso 2>/dev/null || true
-
-# Cleanup
+# ---------- Cleanup ----------
 if (( KEEP_WORK )); then
-    info "Work directory kept at $WORK_DIR"
+    info "Workspace kept at ${WORKSPACE_DIR}"
 else
-    info "Cleaning work directory $WORK_DIR"
-    rm -rf "$WORK_DIR"
+    info "Cleaning workspace ${WORKSPACE_DIR}"
+    rm -rf "${WORKSPACE_DIR:?}"
 fi
 
 msg "Done."

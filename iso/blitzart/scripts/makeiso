@@ -1,43 +1,15 @@
 #!/usr/bin/env bash
-# makeiso - Copy new profile and build BlitzArt ISO
-# Requires artools-iso (pacman -S artools-iso)
+# makeiso - Copy new profile and build BlitzArt ISO (artools buildiso)
+# Requires artools (provides buildiso)
+#
+# Thin wrapper around ./build-iso which creates the artools profile and runs
+# buildiso -p blitzart -i dinit.
 
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 
 msg() { printf '==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
-# Config dirs
-DOTS_REPO="https://github.com/nazwasadfh/dots.git"
-DOTS_DIR="/tmp/blitzart-dots"
-OUTDIR="blitzart-$(date +%Y%m%d-%H%M%S)"
-
-# Clone or update dots
-if [[ -d $DOTS_DIR/.git ]]; then
-    msg "Updating dots from $DOTS_REPO"
-    git -C "$DOTS_DIR" pull --ff-only 2>/dev/null || true
-else
-    msg "Cloning dots from $DOTS_REPO"
-    rm -rf "$DOTS_DIR"
-    git clone --depth 1 "$DOTS_REPO" "$DOTS_DIR"
-fi
-
-# Check profile dir
-if [[ ! -d "./iso/blitzart" ]]; then
-    die "Profile ./iso/blitzart not found. Run from repo root."
-fi
-
-# Build with artools-iso (or artix-iso fallback)
-if command -v artix-iso >/dev/null 2>&1; then
-    msg "Building ISO with artix-iso..."
-    artix-iso -p blitzart -o "$OUTDIR" . 2>&1
-elif command -v mkiso >/dev/null 2>&1; then
-    msg "Building ISO with mkiso..."
-    mkiso -p blitzart -o "$OUTDIR" . 2>&1
-else
-    die "No ISO builder found. Install artools-iso: pacman -S artools-iso"
-fi
-
-msg "Done. ISO should be in ./$OUTDIR/"
+exec ./build-iso "$@"

@@ -17,18 +17,31 @@
 ### Build ISO
 
 ```bash
-# Requires artools-iso
-sudo pacman -S artools-iso
+# Requires artools (provides buildiso)
+sudo pacman -S artools
 
-# Build the ISO
+# Build the ISO (one command, runs even on fresh Artix)
 sudo ./build-iso
 ```
 
+The script creates an artools profile under `~/artools-workspace/iso-profiles/blitzart/`:
+- `Packages-Root` — pakiety do systemu live i zainstalowanego
+- `live-overlay/` — pliki ISO (configs, `blitz`, `blitzinstall`)
+- `root-overlay/` — pliki do zainstalowanego systemu
+
+i uruchamia:
+
+```bash
+buildiso -p blitzart -i dinit
+```
+
+Gotowe ISO pojawia się w `~/artools-workspace/iso/` i jest kopiowane do `./out/`.
+
 ### Install
 
-1. Boot from the live ISO (boot to TTY)
-2. Run: `blitzinstall`
-3. Follow the on-screen prompts
+1. Boot z live ISO (boot do TTY)
+2. Uruchom: `blitzinstall`
+3. Postępuj zgodnie z monitami
 4. Reboot
 
 ## Structure
@@ -41,7 +54,7 @@ sudo ./build-iso
 ├── LICENSE
 ├── .gitignore
 └── iso/
-    └── blitzart/      # artools-iso profile
+    └── blitzart/      # artools profile sources
         ├── profile.conf
         ├── profile.d/
         │   └── profile.sh
@@ -68,7 +81,7 @@ sudo ./build-iso
 ## Requirements
 
 - Artix Linux (or any Arch-based system)
-- artools-iso: `pacman -S artools-iso`
+- artools: `pacman -S artools`
 - Network access during build
 
 ## BlitzArt Linux
