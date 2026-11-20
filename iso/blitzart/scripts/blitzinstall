@@ -441,6 +441,15 @@ if [[ ${REPO_CHAOTIC_AUR} -eq 1 ]]; then
 Include = /etc/pacman.d/chaotic-mirrorlist
 PACCONF
 fi
+
+# --- ILoveCandy ---
+msg "Installing ILoveCandy (GUI launcher)"
+if ask "Install ILoveCandy?"; then
+    echo "==> Installing ILoveCandy via pacman"
+    pacman -S --noconfirm ilove-candy
+else
+    warn "ILoveCandy not installed."
+fi
 INSIDE
 
     info "Repositories configured."
@@ -479,12 +488,27 @@ EOF
 do_grub_customize() {
     msg "Customizing GRUB for BlitzArt branding"
 
-    # Distributor override
-    sed -i 's/^GRUB_DISTRIBUTOR=.*/GRUB_DISTRIBUTOR="BlitzArt"/' "$MOUNTPOINT/etc/default/grub" 2>/dev/null || true
-    grep -q '^GRUB_DISTRIBUTOR=' "$MOUNTPOINT/etc/default/grub" 2>/dev/null || \
-        echo 'GRUB_DISTRIBUTOR="BlitzArt"' >> "$MOUNTPOINT/etc/default/grub"
+    arch-chroot "$MOUNTPOINT" /bin/bash <<EOF
+set -e
 
-    arch-chroot "$MOUNTPOINT" grub-mkconfig -o /boot/grub/grub.cfg
+# Distributor override
+sed -i 's/^GRUB_DISTRIBUTOR=.*/GRUB_DISTRIBUTOR="BlitzArt"/' /etc/default/grub 2>/dev/null || true
+grep -q '^GRUB_DISTRIBUTOR=' /etc/default/grub 2>/dev/null || \
+    echo 'GRUB_DISTRIBUTOR="BlitzArt"' >> /etc/default/grub
+
+# Disable automatic boot target selection (prevents booting into nothing)
+if [[ -f /boot/grub/grub-btrfs.cfg ]]; then
+    sed -i 's/^\(auto\)=.*/auto=no/' /boot/grub/grub-btrfs.cfg 2>/dev/null || true
+fi
+# Remove any timeout lines so GRUB does not auto-boot
+if [[ -f /boot/grub/grub-btrfs.cfg ]]; then
+    sed -i '/^[[:space:]]*timeout=/d' /boot/grub/grub-btrfs.cfg 2>/dev/null || true
+fi
+
+# Rebuild GRUB menu (includes grub-btrfs snapshot entries)
+grub-mkconfig -o /boot/grub/grub.cfg
+EOF
+
     info "GRUB configured."
 }
 
