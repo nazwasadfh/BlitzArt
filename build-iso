@@ -113,29 +113,41 @@ if ! git clone --depth 1 "$DOTS_REPO" "$DOTS_DIR"; then
 fi
 
 # ---------- Set up artools profile ----------
-PROFILE_DIR="${HOME}/artools-workspace/iso-profiles/${PROFILE_NAME}"
-LIVE_OVERLAY="${PROFILE_DIR}/live-overlay"
-ROOT_OVERLAY="${PROFILE_DIR}/root-overlay"
-PACKAGES_LIVE="${PROFILE_DIR}/Packages-Live"
+# buildiso looks in system profile dir first, then workspace
+SYS_PROFILE_DIR="/usr/share/artools/iso-profiles/${PROFILE_NAME}"
+WORKSPACE_PROFILE_DIR="${HOME}/artools-workspace/iso-profiles/${PROFILE_NAME}"
 
-msg "Staging profile into ${PROFILE_DIR}"
-rm -rf "${PROFILE_DIR}"
-mkdir -p "${LIVE_OVERLAY}" "${ROOT_OVERLAY}"
+# Create full profile directory structure
+mkdir -p "${SYS_PROFILE_DIR}"
+LIVE_OVERLAY="${SYS_PROFILE_DIR}/live-overlay"
+ROOT_OVERLAY="${SYS_PROFILE_DIR}/root-overlay"
+PACKAGES_LIVE="${SYS_PROFILE_DIR}/Packages-Live"
+PACKAGES_ROOT="${SYS_PROFILE_DIR}/Packages-Root"
+
+msg "Staging profile into ${SYS_PROFILE_DIR}"
+rm -rf "${SYS_PROFILE_DIR}"
+mkdir -p "${LIVE_OVERLAY}" "${ROOT_OVERLAY}" "${PACKAGES_ROOT}" "${PACKAGES_LIVE}"
 
 # Copy profile.conf (bash sourceable; buildiso sources this file)
-cp "$(dirname "$0")/iso/${PROFILE_NAME}/profile.conf" "${PROFILE_DIR}/profile.conf"
+cp "$(dirname "$0")/iso/${PROFILE_NAME}/profile.conf" "${SYS_PROFILE_DIR}/profile.conf"
 info "Wrote profile.conf"
+
+# Copy profile.yaml (may be checked by buildiso)
+if [[ -f "$(dirname "$0")/iso/${PROFILE_NAME}/profile.yaml" ]]; then
+    cp "$(dirname "$0")/iso/${PROFILE_NAME}/profile.yaml" "${SYS_PROFILE_DIR}/profile.yaml"
+    info "Wrote profile.yaml"
+fi
 
 # Copy Packages-Root (rootfs packages; @initsys@ is substituted by buildiso)
 PACKAGES_SRC="$(dirname "$0")/iso/${PROFILE_NAME}/packages.d/blitzart.packages"
 if [[ ! -f $PACKAGES_SRC ]]; then
     die "Package list not found: $PACKAGES_SRC"
 fi
-cp "$PACKAGES_SRC" "${PROFILE_DIR}/Packages-Root"
+cp "$PACKAGES_SRC" "${SYS_PROFILE_DIR}/Packages-Root"
 info "Wrote Packages-Root ($(wc -l < "$PACKAGES_SRC") lines)"
 
 # Copy Packages-Live (same as Packages-Root for BlitzArt live session)
-cp "$PACKAGES_SRC" "${PROFILE_DIR}/Packages-Live"
+cp "$PACKAGES_SRC" "${SYS_PROFILE_DIR}/Packages-Live"
 info "Wrote Packages-Live ($(wc -l < "$PACKAGES_SRC") lines)"
 
 # Overlay airootfs into live-overlay (files reach the live session verbatim)
@@ -197,10 +209,10 @@ fi
 
 # ---------- Cleanup ----------
 if (( KEEP_WORK )); then
-    info "Workspace/profile kept at ${PROFILE_DIR}"
+    info "Workspace/profile kept at ${SYS_PROFILE_DIR}"
 else
-    info "Removing staged profile ${PROFILE_DIR}"
-    rm -rf "${PROFILE_DIR}"
+    info "Removing staged profile ${SYS_PROFILE_DIR}"
+    rm -rf "${SYS_PROFILE_DIR}"
 fi
 
 msg "Done."
