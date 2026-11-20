@@ -24,7 +24,7 @@ sudo pacman -S artools
 sudo ./build-iso
 ```
 
-The script stages an artools profile under `~/artools-workspace/iso-profiles/blitzart/`:
+The script creates an artools profile under `~/artools-workspace/iso-profiles/blitzart/`:
 - `Packages-Root` — packages for the live and installed system
 - `live-overlay/` — files delivered to live ISO (configs, `blitz`, `blitzinstall`)
 - `root-overlay/` — files delivered to installed system
