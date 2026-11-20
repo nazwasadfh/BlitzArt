@@ -187,10 +187,21 @@ step_kernel() {
     info "Kernel: $KERNEL"
 }
 
+step_keyboard() {
+    header
+    msg "Select keyboard layout"
+    # Curated list of common console keymaps (from /usr/share/kbd/keymaps)
+    menu "Keyboard layout" "Choose your keyboard layout:" \
+        "us" "gb" "de" "fr" "pl" "es" "it" "pt" "ru" "nl" \
+        "cz" "sk" "hu" "ro" "se" "no" "dk" "fi" "tr" "br" "ca" "ch" "be"
+    KEYMAP="$MENU_SELECTION"
+    info "Keyboard layout: $KEYMAP"
+}
+
 step_repos() {
     header
     msg "Repositories"
-    for r in artix arch blackarch chaotic-aur; do
+    for r in arch blackarch chaotic-aur; do
         local var="REPO_$(echo $r | tr 'a-z-' 'A-Z_')"
         if ask "Enable $r repository?"; then
             eval "$var=1"
@@ -205,9 +216,10 @@ step_summary() {
     header
     msg "Installation summary"
     echo "   Disk:      $TARGET_DISK"
+    echo "   Keyboard:  $KEYMAP"
     echo "   Kernel:    $KERNEL"
     echo "   User:      $USERNAME"
-    echo "   Repos:     artix=$REPO_ARTIX arch=$REPO_ARCH blackarch=$REPO_BLACKARCH chaotic=$REPO_CHAOTIC_AUR"
+    echo "   Repos:     arch=$REPO_ARCH blackarch=$REPO_BLACKARCH chaotic=$REPO_CHAOTIC_AUR"
     echo
     if ! confirm "Proceed with installation?"; then
         die "Aborted by user."
@@ -283,10 +295,8 @@ do_pacstrap() {
         nano vim curl wget pacman-contrib
     )
 
-    if (( REPO_ARTIX )); then pkgs+=(artix-keyring); fi
-    if (( REPO_ARCH ));   then pkgs+=(archlinux-keyring); fi
-    if (( REPO_BLACKARCH)); then pkgs+=(blackarch-keyring); fi
-    if (( REPO_CHAOTIC_AUR)); then pkgs+=(chaotic-keyring); fi
+    # Note: keyrings (artix, archlinux, blackarch, chaotic) and repositories
+    # are set up later in do_repos (after pacstrap).
 
     pacstrap -K "$MOUNTPOINT" "${pkgs[@]}"
 
@@ -336,23 +346,8 @@ fi
 ln -sf /etc/dinit.d/NetworkManager /etc/dinit.d/boot
 ln -sf /etc/dinit.d/NetworkManager /etc/dinit.d/default
 
-# Repositories: artix, arch, blackarch, chaotic-aur
-cat >> /etc/pacman.conf <<PACCONF
-
-[arch]
-Server = https://geo.mirror.pkgbuild.com/archlinux/\$repo/os/\$arch
-
-[blackarch]
-Server = https://blackarch.org/repos/blackarch/\$repo
-
-[chaotic-aur]
-Server = https://chaos-uk.org/mirror/chaotic-aur/chaotic-aur/\$repo
-PACCONF
-
-# Keyrings
-pacman-key --init
-pacman-key --populate artix archlinux blackarch chaotic-aur
-pacman -Sy --noconfirm artix-keyring archlinux-keyring blackarch-keyring chaotic-keyring
+# Console keymap
+echo "KEYMAP=$KEYMAP" > /etc/vconsole.conf
 
 # mkinitcpio hooks for btrfs
 sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect modconf kms keyboard keymap consolefont block filesystems fsck)/' /etc/mkinitcpio.conf
@@ -362,6 +357,58 @@ mkinitcpio -P
 grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=BlitzArt
 EOF
     info "Base configuration complete."
+}
+
+do_repos() {
+    msg "Setting up repositories"
+
+    arch-chroot "$MOUNTPOINT" /bin/bash <<INSIDE
+set -e
+
+# --- Arch Linux repositories ---
+if [[ ${REPO_ARCH} -eq 1 ]]; then
+    echo "==> Installing artix-archlinux-support"
+    pacman -S --noconfirm --needed artix-archlinux-support
+    pacman-key --populate archlinux
+    # Append arch repos at the END of pacman.conf
+    cat >> /etc/pacman.conf <<'PACCONF'
+
+# Arch
+[extra]
+Include = /etc/pacman.d/mirrorlist-arch
+
+[multilib]
+Include = /etc/pacman.d/mirrorlist-arch
+PACCONF
+fi
+
+# --- BlackArch ---
+if [[ ${REPO_BLACKARCH} -eq 1 ]]; then
+    echo "==> Installing BlackArch (strap.sh)"
+    curl -O https://blackarch.org/strap.sh
+    chmod +x strap.sh
+    ./strap.sh
+    rm -f strap.sh
+    pacman -Syu --noconfirm
+fi
+
+# --- Chaotic-AUR ---
+if [[ ${REPO_CHAOTIC_AUR} -eq 1 ]]; then
+    echo "==> Installing Chaotic-AUR"
+    pacman-key --recv-key 3056513887B78AEB --keyserver keyserver.ubuntu.com
+    pacman-key --lsign-key 3056513887B78AEB
+    pacman -U --noconfirm 'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-keyring.pkg.tar.zst'
+    pacman -U --noconfirm 'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst'
+    # Add chaotic-aur at the END of pacman.conf
+    cat >> /etc/pacman.conf <<'PACCONF'
+
+[chaotic-aur]
+Include = /etc/pacman.d/chaotic-mirrorlist
+PACCONF
+fi
+INSIDE
+
+    info "Repositories configured."
 }
 
 do_os_release() {
@@ -498,6 +545,7 @@ main() {
     step_disks
     step_autopart
     step_user
+    step_keyboard
     step_kernel
     step_repos
     step_summary
@@ -507,6 +555,7 @@ main() {
     do_mount
     do_pacstrap
     do_configure_chroot
+    do_repos
     do_os_release
     do_grub_customize
     do_blitz_setup
