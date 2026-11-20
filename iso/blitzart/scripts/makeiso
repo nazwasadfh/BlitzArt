@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
-# makeiso - Copy new profile and build BlitzArt ISO (artools buildiso)
+# makeiso - Build BlitzArt Linux ISO (artools buildiso)
 # Requires artools (provides buildiso)
 #
-# Thin wrapper around ./build-iso which creates the artools profile and runs
+# Thin wrapper around ./build-iso which stages the artools profile and runs
 # buildiso -p blitzart -i dinit.
 
 set -euo pipefail
 
-VERSION="1.1.0"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
-msg() { printf '==> %s\n' "$*"; }
-die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-
-exec ./build-iso "$@"
+exec "${PROJECT_DIR}/build-iso" "$@"

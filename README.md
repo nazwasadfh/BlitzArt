@@ -39,9 +39,9 @@ The finished ISO lands in `./out/blitzart/`.
 
 ### Install
 
-1. Boot z live ISO (boot do TTY)
-2. Uruchom: `blitzinstall`
-3. Postępuj zgodnie z monitami
+1. Boot from the live ISO (boot to TTY)
+2. Run: `blitzinstall`
+3. Follow the on-screen prompts
 4. Reboot
 
 ## Structure
