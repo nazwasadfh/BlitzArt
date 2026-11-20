@@ -335,10 +335,13 @@ do_pacstrap() {
 
     pacstrap -K "$MOUNTPOINT" "${pkgs[@]}"
 
-    # Copy blitz tool
-    install -D -m755 /usr/bin/blitz "$MOUNTPOINT/usr/bin/blitz" 2>/dev/null || {
-        info "blitz not found on live system; will be installed post-pacstrap."
-    }
+    # Copy blitz tool into the installed system
+    if [[ -f /usr/local/bin/blitz ]]; then
+        install -D -m755 /usr/local/bin/blitz "$MOUNTPOINT/usr/local/bin/blitz"
+        info "blitz system toolbox installed to $MOUNTPOINT/usr/local/bin/blitz"
+    else
+        warn "blitz not found on live system at /usr/local/bin/blitz; will be installed post-pacstrap."
+    fi
 }
 
 do_configure_chroot() {
