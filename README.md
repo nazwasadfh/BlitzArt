@@ -24,18 +24,18 @@ sudo pacman -S artools
 sudo ./build-iso
 ```
 
-The script creates an artools profile under `~/artools-workspace/iso-profiles/blitzart/`:
-- `Packages-Root` — pakiety do systemu live i zainstalowanego
-- `live-overlay/` — pliki ISO (configs, `blitz`, `blitzinstall`)
-- `root-overlay/` — pliki do zainstalowanego systemu
+The script stages an artools profile under `~/artools-workspace/iso-profiles/blitzart/`:
+- `Packages-Root` — packages for the live and installed system
+- `live-overlay/` — files delivered to live ISO (configs, `blitz`, `blitzinstall`)
+- `root-overlay/` — files delivered to installed system
 
-i uruchamia:
+and runs:
 
 ```bash
-buildiso -p blitzart -i dinit
+buildiso -p blitzart -i dinit -t ./out
 ```
 
-Gotowe ISO pojawia się w `~/artools-workspace/iso/` i jest kopiowane do `./out/`.
+The finished ISO lands in `./out/blitzart/`.
 
 ### Install
 
