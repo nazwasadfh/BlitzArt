@@ -167,8 +167,9 @@ fi
 # Create root-overlay directory (files delivered to installed system)
 mkdir -p "${ROOT_OVERLAY}"
 
-# Minimal root-overlay: blitz tool (will also be installed by blitzinstall)
+# Copy blitz tool into root-overlay (files delivered to installed system)
 if [[ -f /usr/local/bin/blitz ]]; then
+    mkdir -p "${ROOT_OVERLAY}/usr/local/bin"
     cp /usr/local/bin/blitz "${ROOT_OVERLAY}/usr/local/bin/blitz"
     info "Copied blitz to root-overlay"
 fi
