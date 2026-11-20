@@ -1,0 +1,10 @@
+NAME="BlitzArt"
+PRETTY_NAME="BlitzArt Linux"
+ID="artix"
+ID_LIKE="arch"
+VERSION="2026.11"
+VERSION_ID="2026.11"
+HOME_URL="https://blitzart.example.com/"
+SUPPORT_URL="https://blitzart.example.com/"
+BUG_REPORT_URL="https://blitzart.example.com/issues/"
+LOGO=blitzart

@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# build-iso - Build BlitzArt Linux ISO
+# Requires: artools-iso (pacman -S artools-iso)
+#
+# BlitzArt Linux is an Artix-based distribution with:
+#   - Dinit init
+#   - Btrfs root with full snapshots (snapper + grub-btrfs)
+#   - Repos: artix, arch, blackarch, chaotic-aur
+#   - blitz system toolbox
+#   - Boot to TTY
+#
+# Usage: ./build-iso [--profile blitzart] [--out /path/to/out] [--work /path/to/work]
+
+set -euo pipefail
+
+readonly SCRIPT_NAME="$(basename "$0")"
+readonly VERSION="1.0.0"
+readonly DISTRO_NAME="BlitzArt Linux"
+readonly DISTRO_ID="blitzart"
+readonly PROFILE_NAME="blitzart"
+readonly PROFILE_DIR_BASE="/usr/share/artoolsiso/profiles"
+readonly DOTS_REPO="https://github.com/nazwasadfh/dots.git"
+
+# Defaults
+OUT_DIR="./out"
+WORK_DIR="/tmp/blitzart-iso"
+PROFILE="blitzart"
+VERBOSE=0
+KEEP_WORK=0
+
+# Colors
+if [[ -t 1 ]]; then
+    R=$'\e[31m'; G=$'\e[32m'; Y=$'\e[33m'; C=$'\e[36m'; B=$'\e[1m'; N=$'\e[0m'
+else
+    R=""; G=""; Y=""; C=""; B=""; N=""
+fi
+
+msg()  { printf '%s==>%s %s\n' "$G" "$N" "$*"; }
+info() { printf '%s  ->%s %s\n' "$C" "$N" "$*"; }
+warn() { printf '%s==> WARNING:%s %s\n' "$Y" "$N" "$*" >&2; }
+die()  { printf '%s==> ERROR:%s %s\n' "$R" "$N" "$*" >&2; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+usage() {
+    cat <<EOF
+$SCRIPT_NAME v$VERSION - Build BlitzArt Linux ISO
+
+Usage: $SCRIPT_NAME [options]
+
+Options:
+  -p, --profile NAME    Profile name (default: $PROFILE_NAME)
+  -o, --out DIR         Output directory (default: $OUT_DIR)
+  -w, --work DIR        Work directory (default: $WORK_DIR)
+  -k, --keep-work       Keep the work directory after build
+  -v, --verbose         Verbose output
+  -h, --help            Show this help
+
+Requirements: artools-iso (pacman -S artools-iso)
+
+BlitzArt Linux:
+  - Artix-based live ISO with dinit init
+  - Btrfs root + optional @home subvolume
+  - blitz system toolbox included
+  - Boot to TTY (no GUI by default)
+EOF
+}
+
+# Parse args
+while (( $# )); do
+    case $1 in
+        -p|--profile)    PROFILE="$2"; shift 2 ;;
+        -o|--out)        OUT_DIR="$2"; shift 2 ;;
+        -w|--work)       WORK_DIR="$2"; shift 2 ;;
+        -k|--keep-work)  KEEP_WORK=1; shift ;;
+        -v|--verbose)    VERBOSE=1; shift ;;
+        -h|--help)       usage; exit 0 ;;
+        *) die "Unknown option: $1 (use --help)" ;;
+    esac
+done
+
+# Sanity checks
+msg "BlitzArt Linux ISO builder v$VERSION"
+
+[[ $EUID -eq 0 ]] || die "Run as root (artools-iso needs root)."
+
+have mkiso || {
+    if have artix-iso; then
+        # artools-iso on Artix provides artix-iso; mkiso is the archiso name
+        info "Using artix-iso as mkiso"
+        mkiso() { artix-iso "$@"; }
+    else
+        die "artools-iso is not installed. Run: pacman -S artools-iso"
+    fi
+} || die "mkiso not found"
+
+have pacstrap || die "pacstrap not found (part of pacman)."
+
+# Network check
+msg "Checking network connectivity"
+if ! ping -c1 -W3 archlinux.org >/dev/null 2>&1 && ! ping -c1 -W3 1.1.1.1 >/dev/null 2>&1; then
+    die "No network. The ISO builder requires internet access."
+fi
+info "Network OK"
+
+# Locate the profile directory
+msg "Locating the $PROFILE profile"
+
+PROFILE_SRC_DIR=""
+for d in "$PROFILE_DIR_BASE/$PROFILE" "./iso/$PROFILE" "./profiles/$PROFILE" "$(dirname "$0")/iso/$PROFILE"; do
+    if [[ -d $d ]]; then PROFILE_SRC_DIR="$d"; break; fi
+done
+
+if [[ -z $PROFILE_SRC_DIR ]]; then
+    die "Profile '$PROFILE' not found in $PROFILE_DIR_BASE or ./iso/$PROFILE"
+fi
+info "Using profile from $PROFILE_SRC_DIR"
+
+# Ensure the dots repo is up to date
+msg "Preparing dots repository (configs)"
+DOTS_DIR="$WORK_DIR/dots"
+if [[ -d $DOTS_DIR/.git ]]; then
+    info "Updating existing clone at $DOTS_DIR"
+    git -C "$DOTS_DIR" pull --ff-only || warn "Could not update dots; using existing clone"
+else
+    rm -rf "$DOTS_DIR"
+    mkdir -p "$WORK_DIR"
+    info "Cloning $DOTS_REPO into $DOTS_DIR"
+    git clone --depth 1 "$DOTS_REPO" "$DOTS_DIR"
+fi
+
+# Stage profile into work dir (copy so we don't mutate the source)
+STAGE_PROFILE="$WORK_DIR/profile"
+msg "Staging profile into $STAGE_PROFILE"
+rm -rf "$STAGE_PROFILE"
+mkdir -p "$STAGE_PROFILE"
+cp -a "$PROFILE_SRC_DIR"/. "$STAGE_PROFILE"/
+
+# Overlay dots configs into the profile's airootfs
+AIROOTFS="$STAGE_PROFILE/airootfs"
+mkdir -p "$AIROOTFS"
+
+info "Copying fastfetch config"
+if [[ -d $DOTS_DIR/fastfetch ]]; then
+    mkdir -p "$AIROOTFS/etc/skel/.config/fastfetch"
+    cp -a "$DOTS_DIR/fastfetch"/. "$AIROOTFS/etc/skel/.config/fastfetch"/
+    info "  -> /etc/skel/.config/fastfetch"
+else
+    warn "fastfetch config not found in $DOTS_DIR/fastfetch"
+fi
+
+info "Copying .zshrc"
+if [[ -f $DOTS_DIR/.zshrc ]]; then
+    mkdir -p "$AIROOTFS/etc/skel"
+    cp -f "$DOTS_DIR/.zshrc" "$AIROOTFS/etc/skel/.zshrc"
+    info "  -> /etc/skel/.zshrc"
+else
+    warn ".zshrc not found in $DOTS_DIR"
+fi
+
+info "Copying kitty config"
+if [[ -d $DOTS_DIR/kitty ]]; then
+    mkdir -p "$AIROOTFS/etc/skel/.config/kitty"
+    cp -a "$DOTS_DIR/kitty"/. "$AIROOTFS/etc/skel/.config/kitty"/
+    info "  -> /etc/skel/.config/kitty"
+else
+    warn "kitty config not found in $DOTS_DIR/kitty"
+fi
+
+# Build the ISO
+msg "Building ISO with artools-iso"
+mkdir -p "$OUT_DIR"
+
+if have artix-iso; then
+    artix-iso -p "$PROFILE" -o "$OUT_DIR" -w "$WORK_DIR/build" "$STAGE_PROFILE"
+else
+    mkiso -p "$PROFILE" -o "$OUT_DIR" -w "$WORK_DIR/build" "$STAGE_PROFILE"
+fi
+
+msg "ISO build complete"
+info "Output directory: $OUT_DIR"
+ls -lh "$OUT_DIR"/*.iso 2>/dev/null || true
+
+# Cleanup
+if (( KEEP_WORK )); then
+    info "Work directory kept at $WORK_DIR"
+else
+    info "Cleaning work directory $WORK_DIR"
+    rm -rf "$WORK_DIR"
+fi
+
+msg "Done."

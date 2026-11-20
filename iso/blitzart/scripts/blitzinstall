@@ -1,0 +1,517 @@
+#!/usr/bin/env bash
+# blitzinstall - BlitzArt Linux installer
+# Inspired by archinstall | Artix + dinit + btrfs + grub-btrfs + snapper
+#
+# Usage: blitzinstall [--autopart]
+# Booted into BlitzArt live ISO (tty)
+
+set -uo pipefail
+
+readonly VERSION="1.0.0"
+readonly DISTRO_NAME="BlitzArt Linux"
+readonly DISTRO_ID="blitzart"
+readonly OS_RELEASE_PRETTY="BlitzArt Linux"
+readonly OS_RELEASE_NAME="BlitzArt"
+readonly OS_RELEASE_ID="artix"
+readonly OS_RELEASE_ID_LIKE="arch"
+readonly DOTS_REPO="https://github.com/nazwasadfh/dots.git"
+readonly DOTS_DIR="/tmp/blitzart-dots"
+
+# Colours
+if [[ -t 1 ]]; then
+    B=$'\e[1m'; R=$'\e[31m'; G=$'\e[32m'; Y=$'\e[33m'; C=$'\e[36m'; N=$'\e[0m'
+else
+    B="" R="" G="" Y="" C="" N=""
+fi
+
+msg()  { printf '%s==>%s %s\n' "$G" "$N" "$*"; }
+info() { printf '%s  ->%s %s\n' "$C" "$N" "$*"; }
+warn() { printf '%s==> WARNING:%s %s\n' "$Y" "$N" "$*" >&2; }
+die()  { printf '%s==> ERROR:%s %s\n' "$R" "$N" "$*" >&2; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+ask()     { local a; read -r -p "$1 [y/N] " a </dev/tty || return 1; [[ $a =~ ^[Yy]([Ee][Ss])?$ ]]; }
+confirm() { (( ASSUME_YES )) && return 0; ask "$1"; }
+
+# ---------- Global state ----------
+ASSUME_YES=0
+TARGET_DISK=""
+TARGET_PART_EFI=""
+TARGET_PART_ROOT=""
+ROOT_SUBVOL="@"
+HOME_SUBVOL=""
+SNAPSHOT_SUBVOL="@snapshots"
+MOUNTPOINT="/mnt"
+USERNAME=""
+USER_PASSWORD=""
+ROOT_PASSWORD=""
+KERNEL="linux"           # linux | linux-lts | linux-zen | linux-hardened
+LOCALE="en_US.UTF-8"
+KEYMAP="us"
+TIMEZONE="UTC"
+HOSTNAME="blitzart"
+AUTOPART=0
+INSTALL_GRUB=1
+GRUB_ENTRIES=()
+REPO_ARTIX=1 REPO_ARCH=1 REPO_BLACKARCH=1 REPO_CHAOTIC_AUR=1
+
+init_dev_setup() { :; }
+
+# ---------- TUI helpers ----------
+menu() {
+    local title=$1 prompt=$2; shift 2
+    local opts=("$@") chosen idx=1
+    clear
+    echo
+    echo "  $B$title$N"
+    echo "  ----------------------------------------"
+    echo "  $prompt"
+    echo
+    for o in "${opts[@]}"; do
+        printf '   %d) %s\n' "$idx" "$o"
+        idx=$((idx+1))
+    done
+    echo
+    read -r -p "  Select [1-${#opts[@]}]: " chosen </dev/tty || return 1
+    [[ $chosen =~ ^[0-9]+$ ]] || { warn "Invalid choice."; return 1; }
+    (( chosen >= 1 && chosen <= ${#opts[@]} )) || { warn "Out of range."; return 1; }
+    MENU_SELECTION="${opts[$((chosen-1))]}"
+    return 0
+}
+
+header() {
+    clear
+    echo
+    echo "  $B$DISTRO_NAME Installer v$VERSION$N"
+    echo "  Artix-based | dinit | btrfs + grub-btrfs"
+    echo "  ----------------------------------------"
+    echo
+}
+
+# ---------- Pre-flight ----------
+require_root() {
+    [[ $EUID -eq 0 ]] || die "Run as root."
+}
+
+require_tty() {
+    [[ -t 0 ]] || die "blitzinstall must run interactively on a TTY."
+}
+
+check_network() {
+    msg "Checking network connectivity (required)"
+    if ! ping -c1 -W3 archlinux.org >/dev/null 2>&1 && ! ping -c1 -W3 1.1.1.1 >/dev/null 2>&1; then
+        die "No internet connection. BlitzArt installation requires network."
+    fi
+    info "Network OK"
+}
+
+list_disks() {
+    DISKS=()
+    while IFS= read -r line; do
+        DISKS+=("$line")
+    done < <(lsblk -dno NAME,SIZE,TYPE,MODEL | awk '$3=="disk"{printf "%s | %s | %s\n", $1, $2, $4}')
+}
+
+# ---------- Steps ----------
+step_welcome() {
+    header
+    echo "  Welcome to the BlitzArt Linux installer."
+    echo "  This will install $DISTRO_NAME onto your disk."
+    echo
+    echo "  Features:"
+    echo "    • Artix Linux base (dinit init)"
+    echo "    • Btrfs root with full snapshots (snapper + grub-btrfs)"
+    echo "    • Repos: artix, arch, blackarch, chaotic-aur"
+    echo "    • blitz system toolbox"
+    echo
+    if ! confirm "Continue with installation?"; then
+        die "Aborted by user."
+    fi
+}
+
+step_network() {
+    check_network
+}
+
+step_disks() {
+    header
+    msg "Select target disk"
+    list_disks
+    if (( ${#DISKS[@]} == 0 )); then
+        die "No disks found."
+    fi
+    for d in "${DISKS[@]}"; do echo "   $d"; done
+    echo
+    read -r -p "   Disk device (e.g. /dev/nvme0n1): " TARGET_DISK </dev/tty || return 1
+    [[ -b $TARGET_DISK ]] || die "Not a block device: $TARGET_DISK"
+    info "Target disk: $TARGET_DISK"
+}
+
+step_autopart() {
+    header
+    if menu "Partitioning" "Choose partitioning mode:" \
+        "Auto (one disk, GPT, EFI+root, btrfs)" \
+        "Manual (advanced - not yet supported)"; then
+        :
+    fi
+    AUTOPART=1
+    info "Autopartitioning selected (blkdiscard will wipe the disk)"
+}
+
+step_user() {
+    header
+    msg "User account"
+    read -r -p "   Username: " USERNAME </dev/tty || return 1
+    [[ -n $USERNAME ]] || die "Username required."
+    read -r -s -p "   Password: " USER_PASSWORD </dev/tty; echo
+    [[ -n $USER_PASSWORD ]] || die "Password required."
+    read -r -s -p "   Root password: " ROOT_PASSWORD </dev/tty; echo
+    [[ -n $ROOT_PASSWORD ]] || die "Root password required."
+    info "User: $USERNAME"
+}
+
+step_kernel() {
+    header
+    msg "Select kernel"
+    menu "Kernel" "Which kernel to install?" \
+        "linux (stable)" \
+        "linux-lts" \
+        "linux-zen" \
+        "linux-hardened"
+    case $MENU_SELECTION in
+        "linux (stable)") KERNEL="linux" ;;
+        "linux-lts")      KERNEL="linux-lts" ;;
+        "linux-zen")      KERNEL="linux-zen" ;;
+        "linux-hardened") KERNEL="linux-hardened" ;;
+    esac
+    info "Kernel: $KERNEL"
+}
+
+step_repos() {
+    header
+    msg "Repositories"
+    for r in artix arch blackarch chaotic-aur; do
+        local var="REPO_$(echo $r | tr 'a-z-' 'A-Z_')"
+        if ask "Enable $r repository?"; then
+            eval "$var=1"
+        else
+            eval "$var=0"
+        fi
+    done
+    info "Repositories configured."
+}
+
+step_summary() {
+    header
+    msg "Installation summary"
+    echo "   Disk:      $TARGET_DISK"
+    echo "   Kernel:    $KERNEL"
+    echo "   User:      $USERNAME"
+    echo "   Repos:     artix=$REPO_ARTIX arch=$REPO_ARCH blackarch=$REPO_BLACKARCH chaotic=$REPO_CHAOTIC_AUR"
+    echo
+    if ! confirm "Proceed with installation?"; then
+        die "Aborted by user."
+    fi
+}
+
+# ---------- Install ----------
+do_partition() {
+    msg "Wiping disk with blkdiscard -fv $TARGET_DISK"
+    blkdiscard -fv "$TARGET_DISK"
+
+    msg "Creating GPT partition table"
+    parted -s "$TARGET_DISK" mklabel gpt
+
+    msg "Creating EFI partition (512 MiB, fat32, boot, esp)"
+    parted -s "$TARGET_DISK" mkpart ESP fat32 1MiB 513MiB
+    parted -s "$TARGET_DISK" set 1 boot on
+    parted -s "$TARGET_DISK" set 1 esp on
+
+    msg "Creating root partition (rest of disk, btrfs)"
+    parted -s "$TARGET_DISK" mkpart root btrfs 513MiB 100%
+
+    # Wait for kernel to pick up partitions
+    partprobe "$TARGET_DISK" || true
+    sleep 2
+
+    # Determine partition names
+    if [[ $TARGET_DISK =~ nvme|mmcblk ]]; then
+        TARGET_PART_EFI="${TARGET_DISK}p1"
+        TARGET_PART_ROOT="${TARGET_DISK}p2"
+    else
+        TARGET_PART_EFI="${TARGET_DISK}1"
+        TARGET_PART_ROOT="${TARGET_DISK}2"
+    fi
+
+    info "EFI: $TARGET_PART_EFI"
+    info "Root: $TARGET_PART_ROOT"
+}
+
+do_format() {
+    msg "Formatting EFI as FAT32"
+    mkfs.fat -F32 -n EFI "$TARGET_PART_EFI"
+
+    msg "Formatting root as Btrfs"
+    mkfs.btrfs -f -L BLITZART_ROOT "$TARGET_PART_ROOT"
+
+    msg "Creating btrfs subvolumes"
+    mount -o noatime,compress=zstd "$TARGET_PART_ROOT" /mnt
+    btrfs subvolume create /mnt/@
+    btrfs subvolume create /mnt/@snapshots
+    umount /mnt
+}
+
+do_mount() {
+    msg "Mounting subvolumes"
+    mount -o noatime,compress=zstd,subvol=@ "$TARGET_PART_ROOT" "$MOUNTPOINT"
+    mkdir -p "$MOUNTPOINT/.snapshots" "$MOUNTPOINT/boot/efi"
+    mount -o noatime,compress=zstd,subvol=@snapshots "$TARGET_PART_ROOT" "$MOUNTPOINT/.snapshots"
+    mount "$TARGET_PART_EFI" "$MOUNTPOINT/boot/efi"
+}
+
+do_pacstrap() {
+    msg "Running pacstrap (installing base system)"
+
+    local pkgs=(
+        base base-devel dinit dinit-geninitrd dinit-openrc
+        "$KERNEL" "$KERNEL-headers" linux-firmware
+        intel-ucode amd-ucode
+        grub grub-btrfs efibootmgr dosfstools btrfs-progs snapper
+        snapper-tmpfiles networkmanager dinit-network
+        zsh zsh-syntax-highlighting zsh-autosuggestions zsh-history-substring-search
+        oh-my-zsh mcfly zoxide fzf bat eza ugrep tree fastfetch git starship
+        nano vim curl wget pacman-contrib
+    )
+
+    if (( REPO_ARTIX )); then pkgs+=(artix-keyring); fi
+    if (( REPO_ARCH ));   then pkgs+=(archlinux-keyring); fi
+    if (( REPO_BLACKARCH)); then pkgs+=(blackarch-keyring); fi
+    if (( REPO_CHAOTIC_AUR)); then pkgs+=(chaotic-keyring); fi
+
+    pacstrap -K "$MOUNTPOINT" "${pkgs[@]}"
+
+    # Copy blitz tool
+    install -D -m755 /usr/bin/blitz "$MOUNTPOINT/usr/bin/blitz" 2>/dev/null || {
+        info "blitz not found on live system; will be installed post-pacstrap."
+    }
+}
+
+do_configure_chroot() {
+    msg "Configuring the new system (chroot)"
+
+    arch-chroot "$MOUNTPOINT" /bin/bash <<EOF
+set -e
+
+# Locale
+echo "$LOCALE UTF-8" > /etc/locale.gen
+locale-gen
+echo "LANG=$LOCALE" > /etc/locale.conf
+export LANG=$LOCALE
+
+# Timezone
+ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime
+hwclock --systohc
+
+# Hostname
+echo "$HOSTNAME" > /etc/hostname
+cat > /etc/hosts <<HOSTS
+127.0.0.1   localhost
+::1         localhost
+127.0.1.1   $HOSTNAME.localdomain $HOSTNAME
+HOSTS
+
+# Root password
+echo "root:$ROOT_PASSWORD" | chpasswd
+
+# User account
+useradd -m -G wheel -s /bin/zsh "$USERNAME"
+echo "$USERNAME:$USER_PASSWORD" | chpasswd
+
+# Enable wheel sudo (visudo safer)
+if ! grep -q '^%wheel' /etc/sudoers; then
+    echo '%wheel ALL=(ALL:ALL) ALL' >> /etc/sudoers
+fi
+
+# Enable NetworkManager
+ln -sf /etc/dinit.d/NetworkManager /etc/dinit.d/boot
+ln -sf /etc/dinit.d/NetworkManager /etc/dinit.d/default
+
+# Repositories: artix, arch, blackarch, chaotic-aur
+cat >> /etc/pacman.conf <<PACCONF
+
+[arch]
+Server = https://geo.mirror.pkgbuild.com/archlinux/\$repo/os/\$arch
+
+[blackarch]
+Server = https://blackarch.org/repos/blackarch/\$repo
+
+[chaotic-aur]
+Server = https://chaos-uk.org/mirror/chaotic-aur/chaotic-aur/\$repo
+PACCONF
+
+# Keyrings
+pacman-key --init
+pacman-key --populate artix archlinux blackarch chaotic-aur
+pacman -Sy --noconfirm artix-keyring archlinux-keyring blackarch-keyring chaotic-keyring
+
+# mkinitcpio hooks for btrfs
+sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect modconf kms keyboard keymap consolefont block filesystems fsck)/' /etc/mkinitcpio.conf
+mkinitcpio -P
+
+# GRUB
+grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=BlitzArt
+EOF
+    info "Base configuration complete."
+}
+
+do_os_release() {
+    msg "Writing /etc/os-release and /etc/motd"
+
+    cat > "$MOUNTPOINT/etc/os-release" <<EOF
+NAME="$OS_RELEASE_NAME"
+PRETTY_NAME="$OS_RELEASE_PRETTY"
+ID="$OS_RELEASE_ID"
+ID_LIKE="$OS_RELEASE_ID_LIKE"
+VERSION="2026.11"
+VERSION_ID="2026.11"
+HOME_URL="https://blitzart.example.com/"
+SUPPORT_URL="https://blitzart.example.com/"
+BUG_REPORT_URL="https://blitzart.example.com/issues/"
+LOGO=blitzart
+EOF
+
+    cat > "$MOUNTPOINT/etc/motd" <<EOF
+  ____  ____  ____  ____  
+ / ___/ ___/ / __ \/ __ \ 
+/ /__/ /__  / /_/ / / / / 
+\___/\___/  \____/_/ /_/  
+
+Welcome to $DISTRO_NAME
+Artix-based | dinit | btrfs + snapper + grub-btrfs
+Run 'blitz help' for system management.
+EOF
+
+    info "os-release and motd written."
+}
+
+do_grub_customize() {
+    msg "Customizing GRUB for BlitzArt branding"
+
+    # Distributor override
+    sed -i 's/^GRUB_DISTRIBUTOR=.*/GRUB_DISTRIBUTOR="BlitzArt"/' "$MOUNTPOINT/etc/default/grub" 2>/dev/null || true
+    grep -q '^GRUB_DISTRIBUTOR=' "$MOUNTPOINT/etc/default/grub" 2>/dev/null || \
+        echo 'GRUB_DISTRIBUTOR="BlitzArt"' >> "$MOUNTPOINT/etc/default/grub"
+
+    arch-chroot "$MOUNTPOINT" grub-mkconfig -o /boot/grub/grub.cfg
+    info "GRUB configured."
+}
+
+do_blitz_setup() {
+    msg "Setting up blitz (snapper + grub-btrfs)"
+
+    arch-chroot "$MOUNTPOINT" /bin/bash <<EOF
+set -e
+
+# snapper config for root
+snapper -c root create-config /
+
+# Mount .snapshots subvolume
+mkdir -p /.snapshots
+mount -o subvol=@snapshots /dev/$(basename $TARGET_PART_ROOT) /.snapshots 2>/dev/null || true
+
+# Initial snapshot
+snapper -c root create --description "Initial installation" --cleanup-algorithm number
+
+# grub-btrfs config
+grub-mkconfig -o /boot/grub/grub.cfg
+EOF
+
+    info "blitz setup complete. Run 'blitz snapshot create' to make snapshots."
+}
+
+do_copy_configs() {
+    msg "Copying dotfiles from $DOTS_REPO"
+
+    if [[ ! -d $DOTS_DIR/.git ]]; then
+        info "Cloning $DOTS_REPO into $DOTS_DIR"
+        git clone --depth 1 "$DOTS_REPO" "$DOTS_DIR"
+    else
+        git -C "$DOTS_DIR" pull --ff-only || warn "Could not update dots"
+    fi
+
+    local skel_target="$MOUNTPOINT/etc/skel"
+
+    if [[ -d $DOTS_DIR/fastfetch ]]; then
+        mkdir -p "$skel_target/.config/fastfetch"
+        cp -a "$DOTS_DIR/fastfetch"/. "$skel_target/.config/fastfetch"/
+        info "  -> /etc/skel/.config/fastfetch"
+    fi
+
+    if [[ -f $DOTS_DIR/.zshrc ]]; then
+        cp -f "$DOTS_DIR/.zshrc" "$skel_target/.zshrc"
+        info "  -> /etc/skel/.zshrc"
+    fi
+
+    if [[ -d $DOTS_DIR/kitty ]]; then
+        mkdir -p "$skel_target/.config/kitty"
+        cp -a "$DOTS_DIR/kitty"/. "$skel_target/.config/kitty"/
+        info "  -> /etc/skel/.config/kitty"
+    fi
+
+    # Also apply to live user if any
+    info "Configs copied to /etc/skel (will apply to new user on first login)."
+}
+
+do_finalize() {
+    msg "Finalizing installation"
+
+    # Unmount
+    umount -R "$MOUNTPOINT" 2>/dev/null || umount -Rl "$MOUNTPOINT" 2>/dev/null || true
+
+    info "Installation complete!"
+    echo
+    echo "  $B$DISTRO_NAME$N is installed."
+    echo "  Reboot into your new system."
+    echo "  After first boot, run: blitz snapshot create --description 'Post-install'"
+    echo
+}
+
+# ---------- Main ----------
+main() {
+    while (( $# )); do
+        case $1 in
+            --autopart) AUTOPART=1; shift ;;
+            --assume-yes|-y) ASSUME_YES=1; shift ;;
+            -h|--help)
+                echo "blitzinstall v$VERSION - BlitzArt Linux installer"
+                echo "Usage: blitzinstall [--autopart] [-y]"
+                exit 0 ;;
+            *) die "Unknown option: $1" ;;
+        esac
+    done
+
+    require_root
+    require_tty
+
+    step_welcome
+    step_network
+    step_disks
+    step_autopart
+    step_user
+    step_kernel
+    step_repos
+    step_summary
+
+    do_partition
+    do_format
+    do_mount
+    do_pacstrap
+    do_configure_chroot
+    do_os_release
+    do_grub_customize
+    do_blitz_setup
+    do_copy_configs
+    do_finalize
+}
+
+main "$@"
