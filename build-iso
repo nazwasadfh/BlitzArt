@@ -55,15 +55,17 @@ Options:
 Requirements: artools (pacman -S artools)   # provides buildiso
 
 The script stages an artools profile under ~/artools-workspace/iso-profiles/blitzart/:
-  Packages-Root   - packages installed into the live rootfs
-  live-overlay/   - files delivered verbatim into the live ISO (configs, blitz, blitzinstall)
-  root-overlay/   - files delivered verbatim into the installed system
+  profile.conf      - bash sourceable profile (read by buildiso)
+  Packages-Root     - packages for live+installed system
+  root-overlay/     - files delivered into installed system
+  live-overlay/     - files delivered into live session
+  Packages-Live     - live session packages (same as Packages-Root in our case)
 
 and runs:
 
   buildiso -p blitzart -i <INITSYS> -t <OUT_DIR>
 
-The finished ISO lands in <OUT_DIR>/blitzart/<profile>-*.iso
+The finished ISO lands in <OUT_DIR>/blitzart/.
 EOF
 }
 
@@ -114,25 +116,27 @@ fi
 PROFILE_DIR="${HOME}/artools-workspace/iso-profiles/${PROFILE_NAME}"
 LIVE_OVERLAY="${PROFILE_DIR}/live-overlay"
 ROOT_OVERLAY="${PROFILE_DIR}/root-overlay"
+PACKAGES_LIVE="${PROFILE_DIR}/Packages-Live"
 
 msg "Staging profile into ${PROFILE_DIR}"
 rm -rf "${PROFILE_DIR}"
 mkdir -p "${LIVE_OVERLAY}" "${ROOT_OVERLAY}"
 
-# Copy profile.conf and profile.d/ (buildiso reads these for build settings)
+# Copy profile.conf (bash sourceable; buildiso sources this file)
 cp "$(dirname "$0")/iso/${PROFILE_NAME}/profile.conf" "${PROFILE_DIR}/profile.conf"
-if [[ -f "$(dirname "$0")/iso/${PROFILE_NAME}/profile.d/profile.sh" ]]; then
-    cp "$(dirname "$0")/iso/${PROFILE_NAME}/profile.d/profile.sh" "${PROFILE_DIR}/profile.sh"
-    info "Copied profile.conf and profile.sh"
-fi
+info "Wrote profile.conf"
 
-# Packages-Root (rootfs packages; @initsys@ is substituted by buildiso)
+# Copy Packages-Root (rootfs packages; @initsys@ is substituted by buildiso)
 PACKAGES_SRC="$(dirname "$0")/iso/${PROFILE_NAME}/packages.d/blitzart.packages"
 if [[ ! -f $PACKAGES_SRC ]]; then
     die "Package list not found: $PACKAGES_SRC"
 fi
 cp "$PACKAGES_SRC" "${PROFILE_DIR}/Packages-Root"
 info "Wrote Packages-Root ($(wc -l < "$PACKAGES_SRC") lines)"
+
+# Copy Packages-Live (same as Packages-Root for BlitzArt live session)
+cp "$PACKAGES_SRC" "${PROFILE_DIR}/Packages-Live"
+info "Wrote Packages-Live ($(wc -l < "$PACKAGES_SRC") lines)"
 
 # Overlay airootfs into live-overlay (files reach the live session verbatim)
 AIROOTFS="$(dirname "$0")/iso/${PROFILE_NAME}/airootfs"
@@ -158,6 +162,15 @@ if [[ -d $DOTS_DIR ]]; then
         cp -a "$DOTS_DIR/kitty"/. "${LIVE_OVERLAY}/etc/skel/.config/kitty"/
         info "  -> /etc/skel/.config/kitty"
     fi
+fi
+
+# Create root-overlay directory (files delivered to installed system)
+mkdir -p "${ROOT_OVERLAY}"
+
+# Minimal root-overlay: blitz tool (will also be installed by blitzinstall)
+if [[ -f /usr/local/bin/blitz ]]; then
+    cp /usr/local/bin/blitz "${ROOT_OVERLAY}/usr/local/bin/blitz"
+    info "Copied blitz to root-overlay"
 fi
 
 rm -rf "$DOTS_DIR"
