@@ -1,37 +1,40 @@
 # blitzart profile for artools-iso
-# This sets up the profile-specific variables
+# This sets up the profile-specific variables consumed by buildiso
 
 # Distribution info
-PROFILE_NAME="blitzart"
-PROFILE_TITLE="BlitzArt Linux"
-PROFILE_DESCRIPTION="BlitzArt - Artix-based live ISO with blitz installer and dinit init"
-
-# Repositories
-export PROFILE_REPO_ARTIX="https://artixlinux.org/repo/artix"
-export PROFILE_REPO_ARCH="https://geo.mirror.pkgbuild.com/archlinux"
-export PROFILE_REPO_BLACKARCH="https://blackarch.org/repos/blackarch"
-export PROFILE_REPO_CHAOTIC_AUR="https://chaos-kz.org/mirror/chaotic-aur"
+profile_name="blitzart"
+profile_title="BlitzArt Linux"
+profile_description="BlitzArt - Artix-based live ISO with blitz installer and dinit init"
 
 # Init system
-PROFILE_INIT="dinit"
+profile_init="dinit"
+
+# Live session configuration (consumed by buildiso during chroot setup)
+autologin="yes"
+hostname="blitzart"
+username="blitzart"
+password="blitzart"
+addgroups="wheel"
+services_live=(NetworkManager)
+services=(NetworkManager)
 
 # Filesystem config
-PROFILE_FSTYPE_ROOT="btrfs"
-PROFILE_FSTYPE_HOME="btrfs"
-PROFILE_HOME_SUBVOL="@home"
-PROFILE_ROOT_SUBVOL="@"
+fstype_root="btrfs"
+fstype_home="btrfs"
+home_subvol="@home"
+root_subvol="@"
 
 # GRUB customization
-PROFILE_GRUB_DISTRIBUTOR="BlitzArt"
+grub_distributor="BlitzArt"
 
 # OS release customization
-PROFILE_OS_NAME="BlitzArt"
-PROFILE_OS_PRETTY="BlitzArt Linux"
-PROFILE_OS_ID="artix"
-PROFILE_OS_ID_LIKE="arch"
+os_name="BlitzArt"
+os_pretty="BlitzArt Linux"
+os_id="artix"
+os_id_like="arch"
 
 # Package list (core packages included in the ISO)
-PROFILE_PACKAGES=(
+profile_packages=(
     base
     base-devel
     linux
@@ -70,15 +73,9 @@ PROFILE_PACKAGES=(
     wget
 )
 
-# System config
-PROFILE_LOCALE="en_US.UTF-8"
-PROFILE_KEYMAP="us"
-PROFILE_TIMEZONE="UTC"
-PROFILE_HOSTNAME="blitzart"
-
 msg_profile() {
-    printf 'Profile: %s (%s)\n' "$PROFILE_TITLE" "$PROFILE_NAME"
-    printf 'Init: %s\n' "$PROFILE_INIT"
-    printf 'Root fs: %s\n' "$PROFILE_FSTYPE_ROOT"
-    printf 'Distributor: %s\n' "$PROFILE_GRUB_DISTRIBUTOR"
+    printf 'Profile: %s (%s)\n' "$profile_title" "$profile_name"
+    printf 'Init: %s\n' "$profile_init"
+    printf 'Root fs: %s\n' "$fstype_root"
+    printf 'Distributor: %s\n' "$grub_distributor"
 }

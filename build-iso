@@ -121,9 +121,9 @@ mkdir -p "${LIVE_OVERLAY}" "${ROOT_OVERLAY}"
 
 # Copy profile.conf and profile.d/ (buildiso reads these for build settings)
 cp "$(dirname "$0")/iso/${PROFILE_NAME}/profile.conf" "${PROFILE_DIR}/profile.conf"
-if [[ -d "$(dirname "$0")/iso/${PROFILE_NAME}/profile.d" ]]; then
-    cp -a "$(dirname "$0")/iso/${PROFILE_NAME}/profile.d" "${PROFILE_DIR}/"
-    info "Copied profile.conf and profile.d/"
+if [[ -f "$(dirname "$0")/iso/${PROFILE_NAME}/profile.d/profile.sh" ]]; then
+    cp "$(dirname "$0")/iso/${PROFILE_NAME}/profile.d/profile.sh" "${PROFILE_DIR}/profile.sh"
+    info "Copied profile.conf and profile.sh"
 fi
 
 # Packages-Root (rootfs packages; @initsys@ is substituted by buildiso)
