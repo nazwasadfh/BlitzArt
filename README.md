@@ -5,7 +5,7 @@
 ## Features
 
 - **Base:** Artix Linux (dinit init, not systemd)
-- **Filesystem:** Btrfs root + optional @home subvolume
+- **Filesystem:** Btrfs root + optional `@home` subvolume
 - **Snapshots:** snapper + grub-btrfs for full system rollback
 - **Repositories:** artix, arch, blackarch, chaotic-aur
 - **Toolbox:** blitz system management
@@ -37,17 +37,32 @@ sudo ./build-iso
 .
 ├── build-iso          # One-file ISO builder
 ├── blitz              # System toolbox (blitz)
-├── iso/
-│   └── blitzart/      # artools-iso profile
-│       ├── profile.conf
-│       ├── profile.d/
-│       ├── packages.d/
-│       ├── airootfs/
-│       │   ├── etc/
-│       │   ├── usr/bin/blitzinstall
-│       │   └── usr/local/bin/blitz
-│       └── scripts/
-│           └── makeiso
+├── README.md
+├── LICENSE
+├── .gitignore
+└── iso/
+    └── blitzart/      # artools-iso profile
+        ├── profile.conf
+        ├── profile.d/
+        │   └── profile.sh
+        ├── packages.d/
+        │   └── blitzart.packages
+        ├── scripts/
+        │   ├── makeiso        # Copy new profile
+        │   └── blitzinstall   # Installer
+        └── airootfs/
+            ├── etc/
+            │   ├── os-release
+            │   └── motd
+            ├── root/
+            │   └── post-install.sh
+            ├── usr/
+            │   ├── bin/
+            │   │   └── blitzinstall
+            │   └── local/bin/
+            │       └── blitz
+            └── skel/
+                └── .zshrc (from dots repo)
 ```
 
 ## Requirements

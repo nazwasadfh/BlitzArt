@@ -1,0 +1,20 @@
+# Build output
+/out/
+*.iso
+*.img
+blitzart-*/
+work/
+tmp/
+
+# Artix build artifacts
+*.pkg.tar.zst
+*.pkg.tar.xz
+*.sig
+
+# OS generated
+.DS_Store
+*.swp
+*~
+
+# Keep dots clone out of git
+blitzart-dots/
